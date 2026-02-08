@@ -13,7 +13,7 @@ import (
 
 // The maximum request rate for channels and groups is 20 requests/minute. So the minimum update period is 3 seconds,
 // but this constant is set to 4 seconds to avoid occasional rate limiting.
-const MinimumUpdatePeriod = (60/20 + 1) * time.Second
+const MinUpdatePeriod = (60/20 + 1) * time.Second
 
 type Config struct {
 	ChatID         int64

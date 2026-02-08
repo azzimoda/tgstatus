@@ -45,7 +45,7 @@ func main() {
 	defer cancel()
 
 	var wg sync.WaitGroup
-	wg.Go(func() { statusManager.RunUpdater(ctx, tgstatus.MinimumUpdatePeriod) })
+	wg.Go(func() { statusManager.RunUpdater(ctx, tgstatus.MinUpdatePeriod) })
 
 	log.Info().Msg("Starting bot...")
 	b.Start(ctx)
