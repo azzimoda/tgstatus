@@ -8,8 +8,11 @@ import (
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
+
+var logger zerolog.Logger = log.Logger.With().Logger()
 
 // The maximum request rate for channels and groups is 20 requests/minute. So the minimum update period is 3 seconds,
 // but this constant is set to 4 seconds to avoid occasional rate limiting.
@@ -21,28 +24,29 @@ type Config struct {
 	StopStatusFunc StatusFunc
 	SaveFile       string
 	// TODO: Not implemented yet.
-	// 
+	//
 	// How much time to wait before deleting and resending the status message again.
 	// Useful when you want keep the message near to end of chat.
 	//
 	// When equal to zero, the message will not be deleted until it cannot be edited (48 hours).
 	DeleteResendTimeout time.Duration
+	Log                 bool
 }
 
 type StatusFunc = func() StatusParams
 
 type StatusParams struct {
-	Text                    string                          `json:"text"`
-	ParseMode               models.ParseMode                `json:"parse_mode,omitempty"`
-	Entities                []models.MessageEntity          `json:"entities,omitempty"`
-	LinkPreviewOptions      *models.LinkPreviewOptions      `json:"link_preview_options,omitempty"`
-	DisableNotification     bool                            `json:"disable_notification,omitempty"`
-	ProtectContent          bool                            `json:"protect_content,omitempty"`
-	AllowPaidBroadcast      bool                            `json:"allow_paid_broadcast,omitempty"`
-	MessageEffectID         string                          `json:"message_effect_id,omitempty"`
-	SuggestedPostParameters *models.SuggestedPostParameters `json:"suggested_post_parameters,omitempty"`
-	ReplyParameters         *models.ReplyParameters         `json:"reply_parameters,omitempty"`
-	ReplyMarkup             models.ReplyMarkup              `json:"reply_markup,omitempty"`
+	Text                    string
+	ParseMode               models.ParseMode
+	Entities                []models.MessageEntity
+	LinkPreviewOptions      *models.LinkPreviewOptions
+	DisableNotification     bool
+	ProtectContent          bool
+	AllowPaidBroadcast      bool
+	MessageEffectID         string
+	SuggestedPostParameters *models.SuggestedPostParameters
+	ReplyParameters         *models.ReplyParameters
+	ReplyMarkup             models.ReplyMarkup
 }
 
 func (s StatusParams) ToSendMessageParams() bot.SendMessageParams {
@@ -76,14 +80,21 @@ func NewStatusManager(b *bot.Bot, config Config) StatusManager {
 	if config.SaveFile != "" {
 		data, err := os.ReadFile(config.SaveFile)
 		if err != nil {
-			log.Error().Err(err).Msg("Failed to read save file")
+			logger.Error().Err(err).Msg("Failed to read save file")
 		}
 
 		err = json.Unmarshal(data, &sm.messageID)
 		if err != nil {
-			log.Error().Err(err).Msg("Failed to unmarshal save file")
+			logger.Error().Err(err).Msg("Failed to unmarshal save file")
 		}
 	}
+
+	if config.Log {
+		logger = logger.Level(zerolog.GlobalLevel())
+	} else {
+		logger = logger.Level(zerolog.Disabled)
+	}
+
 	return sm
 }
 
@@ -95,7 +106,7 @@ type StatusManager struct {
 
 func (s *StatusManager) setStatus(params StatusParams) error {
 	if s.messageID == 0 {
-		log.Warn().Msg("Message ID is not set; sending new message...")
+		logger.Warn().Msg("Message ID is not set; sending new message...")
 		sendMessageParams := params.ToSendMessageParams()
 		sendMessageParams.ChatID = s.ChatID
 		msg, err := s.bot.SendMessage(context.Background(), &sendMessageParams)
@@ -105,7 +116,7 @@ func (s *StatusManager) setStatus(params StatusParams) error {
 		s.messageID = msg.ID // TODO: Save messageID somewhere.
 		return nil
 	} else {
-		log.Debug().Int64("chatID", s.ChatID).Msg("Editing status message...")
+		logger.Trace().Int64("chatID", s.ChatID).Msg("Editing status message...")
 
 		editMessageTextParams := params.ToEditMessageTextParams()
 		editMessageTextParams.ChatID = s.ChatID
@@ -113,14 +124,14 @@ func (s *StatusManager) setStatus(params StatusParams) error {
 		_, err := s.bot.EditMessageText(context.Background(), &editMessageTextParams)
 
 		if err != nil {
-			log.Warn().Err(err).Msg("Failed to edit status message; trying to delete it and send new one...")
+			logger.Warn().Err(err).Msg("Failed to edit status message; trying to delete it and send new one...")
 			if isDeleted, err := s.bot.DeleteMessage(context.Background(), &bot.DeleteMessageParams{
 				ChatID:    s.ChatID,
 				MessageID: s.messageID,
 			}); err != nil {
-				log.Error().Err(err).Msg("Failed to delete status message")
+				logger.Error().Err(err).Msg("Failed to delete status message")
 			} else if !isDeleted {
-				log.Warn().Msg("The status message is not deleted")
+				logger.Warn().Msg("The status message is not deleted")
 			}
 			s.messageID = 0
 			return s.setStatus(params)
@@ -131,17 +142,17 @@ func (s *StatusManager) setStatus(params StatusParams) error {
 }
 
 func (s *StatusManager) RunUpdater(ctx context.Context, period time.Duration) {
-	log.Debug().Msg("Updater started")
+	logger.Trace().Msg("Updater started")
 	s.UpdateStatus(s.StatusFunc)
 	for {
 		select {
 		case <-ctx.Done():
-			log.Debug().Msg("Stopping updater...")
+			logger.Trace().Msg("Stopping updater...")
 			s.UpdateStatus(s.StopStatusFunc)
 			if err := s.saveFile(); err != nil {
-				log.Error().Err(err).Msg("Failed to save message ID")
+				logger.Error().Err(err).Msg("Failed to save message ID")
 			} else {
-				log.Info().Msg("Updater stopped")
+				logger.Debug().Msg("Updater stopped")
 			}
 			return
 		case <-time.After(period):
@@ -151,13 +162,13 @@ func (s *StatusManager) RunUpdater(ctx context.Context, period time.Duration) {
 }
 
 func (s *StatusManager) UpdateStatus(statusFunc StatusFunc) {
-	log.Debug().Msg("Updating status...")
+	logger.Trace().Msg("Updating status...")
 	params := statusFunc()
 	err := s.setStatus(params)
 	if err != nil {
-		log.Warn().Err(err).Any("params", params).Msg("Failed to update status")
+		logger.Warn().Err(err).Any("params", params).Msg("Failed to update status")
 	} else {
-		log.Info().Msg("Status updated")
+		logger.Trace().Msg("Status updated")
 	}
 }
 
@@ -166,7 +177,7 @@ func (s *StatusManager) saveFile() error {
 		return nil
 	}
 
-	log.Debug().Int("messageID", s.messageID).Msg("Saving message ID...")
+	logger.Trace().Int("messageID", s.messageID).Msg("Saving message ID...")
 	data, err := json.Marshal(s.messageID)
 	if err != nil {
 		return err
